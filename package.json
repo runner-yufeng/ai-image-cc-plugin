@@ -1,6 +1,6 @@
 {
   "name": "@runner-yufeng/ai-image",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "CLI for AI image generation — AI Studio free tier with Vertex AI fallback, plus OpenAI",
   "type": "module",
   "bin": {
