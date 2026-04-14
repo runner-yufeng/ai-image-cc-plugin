@@ -3,6 +3,8 @@ import {
   experimental_generateImage as generateImage,
   generateText,
   APICallError,
+  type LanguageModel,
+  type ImageModel,
 } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -11,11 +13,26 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-const CONFIG_DIR = join(homedir(), ".ai-image");
-const ENV_FILE = join(CONFIG_DIR, ".env");
+export const CONFIG_DIR = join(homedir(), ".ai-image");
+export const ENV_FILE = join(CONFIG_DIR, ".env");
+export const DEFAULT_MODEL = "google/gemini-2.5-flash-image";
 
-if (existsSync(ENV_FILE)) {
-  for (const line of readFileSync(ENV_FILE, "utf-8").split("\n")) {
+export type Kind = "image" | "multimodal";
+export type ImgOut = { bytes: Uint8Array; ext: string };
+
+export interface GenerateOptions {
+  prompt: string;
+  count: number;
+  aspect?: string;
+}
+
+export interface RunOptions extends GenerateOptions {
+  modelId: string;
+}
+
+export function loadEnvFile(path = ENV_FILE): void {
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, "utf-8").split("\n")) {
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
     const key = line.slice(0, eq).trim();
@@ -24,10 +41,139 @@ if (existsSync(ENV_FILE)) {
   }
 }
 
-const args = process.argv.slice(2);
+export function parseModelSlug(slug: string): { provider: string; modelId: string } {
+  const slash = slug.indexOf("/");
+  if (slash <= 0) throw new Error(`model must be "provider/id" (got "${slug}")`);
+  return { provider: slug.slice(0, slash), modelId: slug.slice(slash + 1) };
+}
 
-if (args.length === 0 || args.includes("-h") || args.includes("--help")) {
-  console.log(`ai-image — AI Image Generation
+export function isMultimodalLLM(id: string): boolean {
+  return /gemini.*image/i.test(id) || /nano-banana/i.test(id);
+}
+
+export function shouldFallbackToVertex(
+  err: unknown,
+): { fallback: boolean; why: string } {
+  if (APICallError.isInstance(err)) {
+    const code = err.statusCode;
+    if (code === 429) return { fallback: true, why: "HTTP 429 (quota/rate limit)" };
+    if (code === 403) return { fallback: true, why: "HTTP 403 (quota/permission)" };
+    if (code === 404) return { fallback: true, why: "HTTP 404 (model unavailable)" };
+  }
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (/quota|rate.?limit|exhausted|too many|resource.?exhausted/.test(msg)) {
+    return { fallback: true, why: "quota/rate limit error" };
+  }
+  if (/not.?found|unavailable|not.?supported/.test(msg)) {
+    return { fallback: true, why: "model not available on AI Studio" };
+  }
+  return { fallback: false, why: "" };
+}
+
+export async function runWithModel(
+  model: LanguageModel | ImageModel,
+  kind: Kind,
+  opts: GenerateOptions,
+): Promise<ImgOut[]> {
+  const { prompt, count, aspect } = opts;
+  if (kind === "multimodal") {
+    const tasks = Array.from({ length: count }, () =>
+      generateText({ model: model as LanguageModel, prompt }),
+    );
+    const results = await Promise.all(tasks);
+    const out: ImgOut[] = [];
+    for (const r of results) {
+      for (const f of r.files.filter((f) => f.mediaType?.startsWith("image/"))) {
+        const ext = f.mediaType?.split("/")[1]?.split("+")[0] ?? "png";
+        out.push({ bytes: f.uint8Array, ext });
+      }
+    }
+    return out;
+  }
+  const r = await generateImage({
+    model: model as ImageModel,
+    prompt,
+    n: count,
+    ...(aspect && { aspectRatio: aspect as `${number}:${number}` }),
+  });
+  return r.images.map((img) => ({ bytes: img.uint8Array, ext: "png" }));
+}
+
+export async function runOpenAI(
+  opts: RunOptions,
+): Promise<{ images: ImgOut[]; via: string }> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error(
+      `OPENAI_API_KEY not set.\n  echo "OPENAI_API_KEY=sk-..." >> ${ENV_FILE}`,
+    );
+  }
+  const images = await runWithModel(openai.image(opts.modelId), "image", opts);
+  return { images, via: "OpenAI" };
+}
+
+export async function runAIStudio(opts: RunOptions & { kind: Kind }): Promise<ImgOut[]> {
+  const googleAI = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
+  const model =
+    opts.kind === "multimodal" ? googleAI(opts.modelId) : googleAI.image(opts.modelId);
+  return runWithModel(model, opts.kind, opts);
+}
+
+export async function runVertex(opts: RunOptions & { kind: Kind }): Promise<ImgOut[]> {
+  const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_VERTEX_PROJECT;
+  const location =
+    process.env.GOOGLE_CLOUD_LOCATION ||
+    process.env.GOOGLE_VERTEX_LOCATION ||
+    "us-central1";
+  if (!project) {
+    throw new Error(
+      `GOOGLE_CLOUD_PROJECT not set for Vertex fallback.\n  echo "GOOGLE_CLOUD_PROJECT=your-project" >> ${ENV_FILE}`,
+    );
+  }
+  const vertex = createVertex({ project, location });
+  const model =
+    opts.kind === "multimodal" ? vertex(opts.modelId) : vertex.image(opts.modelId);
+  return runWithModel(model, opts.kind, opts);
+}
+
+export async function runGoogle(
+  opts: RunOptions & { forceVertex: boolean },
+): Promise<{ images: ImgOut[]; via: string }> {
+  const kind: Kind = isMultimodalLLM(opts.modelId) ? "multimodal" : "image";
+  const slug = `google/${opts.modelId}`;
+
+  if (!opts.forceVertex && process.env.GEMINI_API_KEY) {
+    try {
+      console.log(`→ AI Studio (free tier): ${slug}`);
+      const images = await runAIStudio({ ...opts, kind });
+      return { images, via: "AI Studio" };
+    } catch (err) {
+      const { fallback, why } = shouldFallbackToVertex(err);
+      if (!fallback) throw err;
+      const detail = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      console.log(`  AI Studio → ${why}: ${detail}`);
+      console.log(`  falling back to Vertex AI...`);
+    }
+  }
+
+  console.log(`→ Vertex AI: ${slug}`);
+  const images = await runVertex({ ...opts, kind });
+  return { images, via: "Vertex" };
+}
+
+export function nameFor(
+  i: number,
+  ext: string,
+  output: string | undefined,
+  count: number,
+  stamp: number,
+): string {
+  if (output) {
+    return count > 1 ? output.replace(/(\.\w+)?$/, `-${i + 1}$1`) : output;
+  }
+  return `ai-image-${stamp}${i > 0 ? `-${i + 1}` : ""}.${ext}`;
+}
+
+const HELP = `ai-image — AI Image Generation
 
 Routing for google/* models:
   1. AI Studio (GEMINI_API_KEY)     free tier, preferred
@@ -46,7 +192,7 @@ Models:
   openai/gpt-image-1                      OpenAI gpt-image-1
 
 Options:
-  -m, --model        Model slug [default: google/gemini-2.5-flash-image]
+  -m, --model        Model slug [default: ${DEFAULT_MODEL}]
   -o, --output       Output filename [default: ai-image-{timestamp}.png]
   -n, --count        Number of images [default: 1]
   -a, --aspect       Aspect ratio, e.g. 1:1, 16:9, 9:16
@@ -58,181 +204,101 @@ Auth (${ENV_FILE}):
   GOOGLE_CLOUD_PROJECT=...           Vertex AI fallback
   GOOGLE_CLOUD_LOCATION=us-central1  (optional)
   OPENAI_API_KEY=sk-...              OpenAI models
-`);
-  process.exit(args.length === 0 ? 1 : 0);
+`;
+
+export interface ParsedArgs {
+  prompt: string;
+  modelSlug: string;
+  output?: string;
+  count: number;
+  aspect?: string;
+  forceVertex: boolean;
+  help: boolean;
 }
 
-let prompt = "";
-let modelSlug = "google/gemini-2.5-flash-image";
-let output: string | undefined;
-let count = 1;
-let aspect: string | undefined;
-let forceVertex = false;
+export function parseArgs(argv: string[]): ParsedArgs {
+  let prompt = "";
+  let modelSlug = DEFAULT_MODEL;
+  let output: string | undefined;
+  let count = 1;
+  let aspect: string | undefined;
+  let forceVertex = false;
+  let help = false;
 
-for (let i = 0; i < args.length; i++) {
-  const a = args[i];
-  if (a === "-m" || a === "--model") modelSlug = args[++i];
-  else if (a === "-o" || a === "--output") output = args[++i];
-  else if (a === "-n" || a === "--count") count = Number(args[++i]);
-  else if (a === "-a" || a === "--aspect") aspect = args[++i];
-  else if (a === "--force-vertex") forceVertex = true;
-  else if (!prompt) prompt = a;
-}
-
-if (!prompt) {
-  console.error('Error: prompt required. Try: ai-image "a sunset"');
-  process.exit(1);
-}
-
-const slash = modelSlug.indexOf("/");
-if (slash <= 0) {
-  console.error(`Error: model must be "provider/id" (got "${modelSlug}")`);
-  process.exit(1);
-}
-const provider = modelSlug.slice(0, slash);
-const modelId = modelSlug.slice(slash + 1);
-
-type Kind = "image" | "multimodal";
-const isMultimodalLLM = (id: string) =>
-  /gemini.*image/i.test(id) || /nano-banana/i.test(id);
-
-type ImgOut = { bytes: Uint8Array; ext: string };
-
-async function runWithModel(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  model: any,
-  kind: Kind,
-): Promise<ImgOut[]> {
-  if (kind === "multimodal") {
-    const tasks = Array.from({ length: count }, () =>
-      generateText({ model, prompt }),
-    );
-    const results = await Promise.all(tasks);
-    const out: ImgOut[] = [];
-    for (const r of results) {
-      for (const f of r.files.filter((f) => f.mediaType?.startsWith("image/"))) {
-        const ext = f.mediaType?.split("/")[1]?.split("+")[0] ?? "png";
-        out.push({ bytes: f.uint8Array, ext });
-      }
-    }
-    return out;
-  }
-  const r = await generateImage({
-    model,
-    prompt,
-    n: count,
-    ...(aspect && { aspectRatio: aspect as `${number}:${number}` }),
-  });
-  return r.images.map((img) => ({ bytes: img.uint8Array, ext: "png" }));
-}
-
-function shouldFallbackToVertex(err: unknown): { fallback: boolean; why: string } {
-  if (APICallError.isInstance(err)) {
-    const code = err.statusCode;
-    if (code === 429) return { fallback: true, why: `HTTP 429 (quota/rate limit)` };
-    if (code === 403) return { fallback: true, why: `HTTP 403 (quota/permission)` };
-    if (code === 404) return { fallback: true, why: `HTTP 404 (model unavailable)` };
-  }
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  if (/quota|rate.?limit|exhausted|too many|resource.?exhausted/.test(msg)) {
-    return { fallback: true, why: "quota/rate limit error" };
-  }
-  if (/not.?found|unavailable|not.?supported/.test(msg)) {
-    return { fallback: true, why: "model not available on AI Studio" };
-  }
-  return { fallback: false, why: "" };
-}
-
-async function runOpenAI(): Promise<{ images: ImgOut[]; via: string }> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error(
-      `OPENAI_API_KEY not set.\n  echo "OPENAI_API_KEY=sk-..." >> ${ENV_FILE}`,
-    );
-  }
-  const images = await runWithModel(openai.image(modelId), "image");
-  return { images, via: "OpenAI" };
-}
-
-async function runAIStudio(kind: Kind): Promise<ImgOut[]> {
-  const googleAI = createGoogleGenerativeAI({
-    apiKey: process.env.GEMINI_API_KEY,
-  });
-  const model = kind === "multimodal" ? googleAI(modelId) : googleAI.image(modelId);
-  return runWithModel(model, kind);
-}
-
-async function runVertex(kind: Kind): Promise<ImgOut[]> {
-  const project =
-    process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_VERTEX_PROJECT;
-  const location =
-    process.env.GOOGLE_CLOUD_LOCATION ||
-    process.env.GOOGLE_VERTEX_LOCATION ||
-    "us-central1";
-  if (!project) {
-    throw new Error(
-      `GOOGLE_CLOUD_PROJECT not set for Vertex fallback.\n  echo "GOOGLE_CLOUD_PROJECT=your-project" >> ${ENV_FILE}`,
-    );
-  }
-  const vertex = createVertex({ project, location });
-  const model = kind === "multimodal" ? vertex(modelId) : vertex.image(modelId);
-  return runWithModel(model, kind);
-}
-
-async function runGoogle(): Promise<{ images: ImgOut[]; via: string }> {
-  const kind: Kind = isMultimodalLLM(modelId) ? "multimodal" : "image";
-
-  if (!forceVertex && process.env.GEMINI_API_KEY) {
-    try {
-      console.log(`→ AI Studio (free tier): ${modelSlug}`);
-      const images = await runAIStudio(kind);
-      return { images, via: "AI Studio" };
-    } catch (err) {
-      const { fallback, why } = shouldFallbackToVertex(err);
-      if (!fallback) throw err;
-      const detail = err instanceof Error ? err.message.split("\n")[0] : String(err);
-      console.log(`  AI Studio → ${why}: ${detail}`);
-      console.log(`  falling back to Vertex AI...`);
-    }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "-h" || a === "--help") help = true;
+    else if (a === "-m" || a === "--model") modelSlug = argv[++i];
+    else if (a === "-o" || a === "--output") output = argv[++i];
+    else if (a === "-n" || a === "--count") count = Number(argv[++i]);
+    else if (a === "-a" || a === "--aspect") aspect = argv[++i];
+    else if (a === "--force-vertex") forceVertex = true;
+    else if (!prompt) prompt = a;
   }
 
-  console.log(`→ Vertex AI: ${modelSlug}`);
-  const images = await runVertex(kind);
-  return { images, via: "Vertex" };
+  return { prompt, modelSlug, output, count, aspect, forceVertex, help };
 }
 
-const stamp = Date.now();
-const nameFor = (i: number, ext: string) => {
-  if (output) {
-    return count > 1 ? output.replace(/(\.\w+)?$/, `-${i + 1}$1`) : output;
-  }
-  return `ai-image-${stamp}${i > 0 ? `-${i + 1}` : ""}.${ext}`;
-};
+export async function main(argv: string[]): Promise<number> {
+  loadEnvFile();
 
-try {
+  if (argv.length === 0) {
+    console.log(HELP);
+    return 1;
+  }
+
+  const args = parseArgs(argv);
+  if (args.help) {
+    console.log(HELP);
+    return 0;
+  }
+
+  if (!args.prompt) {
+    console.error('Error: prompt required. Try: ai-image "a sunset"');
+    return 1;
+  }
+
+  const { provider, modelId } = parseModelSlug(args.modelSlug);
+
+  const runOpts: RunOptions & { forceVertex: boolean } = {
+    modelId,
+    prompt: args.prompt,
+    count: args.count,
+    aspect: args.aspect,
+    forceVertex: args.forceVertex,
+  };
+
   let result: { images: ImgOut[]; via: string };
   if (provider === "openai") {
-    result = await runOpenAI();
+    result = await runOpenAI(runOpts);
   } else if (provider === "google" || provider === "vertex") {
-    result = await runGoogle();
+    result = await runGoogle(runOpts);
   } else {
     console.error(`Error: unknown provider "${provider}" (supported: openai, google)`);
-    process.exit(1);
+    return 1;
   }
 
   if (result.images.length === 0) {
     console.error("Error: no images returned");
-    process.exit(1);
+    return 1;
   }
 
+  const stamp = Date.now();
   for (let i = 0; i < result.images.length; i++) {
     const img = result.images[i];
-    const filename = nameFor(i, img.ext);
+    const filename = nameFor(i, img.ext, args.output, args.count, stamp);
     writeFileSync(filename, img.bytes);
     console.log(`✓ ${resolve(filename)}`);
   }
   console.log(`  via ${result.via}`);
-} catch (err) {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error(`Error: ${msg}`);
-  process.exit(1);
+  return 0;
+}
+
+if (import.meta.main) {
+  main(process.argv.slice(2))
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    });
 }
