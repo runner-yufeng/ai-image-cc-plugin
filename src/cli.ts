@@ -9,7 +9,7 @@ import {
 import { openai } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createVertex } from "@ai-sdk/google-vertex";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { config as dotenvConfig } from "dotenv";
@@ -45,8 +45,38 @@ export function parseModelSlug(slug: string): { provider: string; modelId: strin
   return { provider: slug.slice(0, slash), modelId: slug.slice(slash + 1) };
 }
 
-export function isMultimodalLLM(id: string): boolean {
-  return /gemini.*image/i.test(id) || /nano-banana/i.test(id);
+export const MULTIMODAL_MODELS: readonly string[] = [
+  "gemini-2.5-flash-image",
+  "gemini-3-pro-image-preview",
+  "gemini-3.1-flash-image-preview",
+  "nano-banana",
+  "nano-banana-pro",
+];
+
+export type KindOverride = Kind | undefined;
+
+/**
+ * Resolve whether a model should be called as a multimodal LLM (generateText)
+ * or an image-only model (generateImage).
+ *
+ * Precedence:
+ *   1. Explicit override (--multimodal / --image-only) wins.
+ *   2. Exact match against MULTIMODAL_MODELS allowlist → multimodal.
+ *   3. Heuristic fallback for unknown gemini/nano-banana image variants → multimodal
+ *      with a warning, so future model renames don't silently break routing.
+ *   4. Otherwise → image-only.
+ */
+export function resolveKind(modelId: string, override: KindOverride): Kind {
+  if (override) return override;
+  if (MULTIMODAL_MODELS.includes(modelId)) return "multimodal";
+  if (/gemini.*image/i.test(modelId) || /nano-banana/i.test(modelId)) {
+    process.stderr.write(
+      `warning: "${modelId}" is not in the multimodal allowlist but matches the heuristic; ` +
+        `treating as multimodal. Pass --image-only to override.\n`,
+    );
+    return "multimodal";
+  }
+  return "image";
 }
 
 export function shouldFallbackToVertex(
@@ -138,26 +168,26 @@ export async function runVertex(opts: RunOptions & { kind: Kind }): Promise<ImgO
 }
 
 export async function runGoogle(
-  opts: RunOptions & { forceVertex: boolean },
+  opts: RunOptions & { forceVertex: boolean; kindOverride?: KindOverride },
 ): Promise<{ images: ImgOut[]; via: string }> {
-  const kind: Kind = isMultimodalLLM(opts.modelId) ? "multimodal" : "image";
+  const kind: Kind = resolveKind(opts.modelId, opts.kindOverride);
   const slug = `google/${opts.modelId}`;
 
   if (!opts.forceVertex && process.env.GEMINI_API_KEY) {
     try {
-      console.log(`→ AI Studio (free tier): ${slug}`);
+      console.error(`→ AI Studio (free tier): ${slug}`);
       const images = await runAIStudio({ ...opts, kind });
       return { images, via: "AI Studio" };
     } catch (err) {
       const { fallback, why } = shouldFallbackToVertex(err);
       if (!fallback) throw err;
       const detail = err instanceof Error ? err.message.split("\n")[0] : String(err);
-      console.log(`  AI Studio → ${why}: ${detail}`);
-      console.log(`  falling back to Vertex AI...`);
+      console.error(`  AI Studio → ${why}: ${detail}`);
+      console.error(`  falling back to Vertex AI...`);
     }
   }
 
-  console.log(`→ Vertex AI: ${slug}`);
+  console.error(`→ Vertex AI: ${slug}`);
   const images = await runVertex({ ...opts, kind });
   return { images, via: "Vertex" };
 }
@@ -198,9 +228,17 @@ Options:
   -o, --output       Output filename [default: ai-image-{timestamp}.png]
   -n, --count        Number of images [default: 1]
   -a, --aspect       Aspect ratio, e.g. 1:1, 16:9, 9:16
+  -d, --output-dir   Directory to write images into (created if missing)
       --force-vertex Skip AI Studio, go straight to Vertex
+      --multimodal   Force multimodal path (generateText via result.files)
+      --image-only   Force image-only path (experimental_generateImage)
+      --json         Emit JSON {files,via,model} on stdout (logs → stderr)
   -h, --help         Show this help
       --version      Print version and exit
+
+Prompt input:
+  Pass prompt as the first positional arg, or pipe it via stdin:
+    echo "a sunset over the ocean" | ai-image
 
 Auth (${ENV_FILE}):
   GEMINI_API_KEY=...                 AI Studio free tier (preferred)
@@ -213,18 +251,28 @@ export interface ParsedArgs {
   prompt: string;
   modelSlug: string;
   output?: string;
+  outputDir?: string;
   count: number;
   aspect?: string;
   forceVertex: boolean;
+  kindOverride?: KindOverride;
+  json: boolean;
   help: boolean;
   version: boolean;
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const raw = mri(argv, {
-    alias: { m: "model", o: "output", n: "count", a: "aspect", h: "help" },
-    boolean: ["help", "version", "force-vertex"],
-    string: ["model", "output", "aspect"],
+    alias: {
+      m: "model",
+      o: "output",
+      n: "count",
+      a: "aspect",
+      d: "output-dir",
+      h: "help",
+    },
+    boolean: ["help", "version", "force-vertex", "multimodal", "image-only", "json"],
+    string: ["model", "output", "aspect", "output-dir"],
     default: { model: DEFAULT_MODEL, count: 1 },
   });
 
@@ -234,25 +282,43 @@ export function parseArgs(argv: string[]): ParsedArgs {
     throw new Error(`--count/-n must be a positive integer (got "${countRaw}")`);
   }
 
+  const multimodal = Boolean(raw.multimodal);
+  const imageOnly = Boolean(raw["image-only"]);
+  if (multimodal && imageOnly) {
+    throw new Error("--multimodal and --image-only are mutually exclusive");
+  }
+  const kindOverride: KindOverride = multimodal
+    ? "multimodal"
+    : imageOnly
+      ? "image"
+      : undefined;
+
   return {
     prompt: typeof raw._[0] === "string" ? raw._[0] : "",
     modelSlug: String(raw.model),
     output: raw.output ? String(raw.output) : undefined,
+    outputDir: raw["output-dir"] ? String(raw["output-dir"]) : undefined,
     count,
     aspect: raw.aspect ? String(raw.aspect) : undefined,
     forceVertex: Boolean(raw["force-vertex"]),
+    kindOverride,
+    json: Boolean(raw.json),
     help: Boolean(raw.help),
     version: Boolean(raw.version),
   };
 }
 
+export async function readStdinPrompt(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf-8").trim();
+}
+
 export async function main(argv: string[]): Promise<number> {
   loadEnvFile();
-
-  if (argv.length === 0) {
-    console.log(HELP);
-    return 1;
-  }
 
   let args: ParsedArgs;
   try {
@@ -272,19 +338,28 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  if (!args.prompt) {
+  let prompt = args.prompt;
+  if (!prompt) prompt = await readStdinPrompt();
+  if (!prompt) {
+    // No prompt from args or stdin. Print help for interactive users,
+    // error for scripted invocations (e.g. `ai-image -n 2` with no positional).
+    if (argv.length === 0 && process.stdin.isTTY) {
+      console.log(HELP);
+      return 1;
+    }
     console.error('Error: prompt required. Try: ai-image "a sunset"');
     return 1;
   }
 
   const { provider, modelId } = parseModelSlug(args.modelSlug);
 
-  const runOpts: RunOptions & { forceVertex: boolean } = {
+  const runOpts: RunOptions & { forceVertex: boolean; kindOverride?: KindOverride } = {
     modelId,
-    prompt: args.prompt,
+    prompt,
     count: args.count,
     aspect: args.aspect,
     forceVertex: args.forceVertex,
+    kindOverride: args.kindOverride,
   };
 
   let result: { images: ImgOut[]; via: string };
@@ -302,14 +377,24 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
+  if (args.outputDir) mkdirSync(args.outputDir, { recursive: true });
+
   const stamp = Date.now();
+  const saved: string[] = [];
   for (let i = 0; i < result.images.length; i++) {
     const img = result.images[i];
-    const filename = nameFor(i, img.ext, args.output, args.count, stamp);
-    writeFileSync(filename, img.bytes);
-    console.log(`✓ ${resolve(filename)}`);
+    const basename = nameFor(i, img.ext, args.output, args.count, stamp);
+    const filepath = args.outputDir ? join(args.outputDir, basename) : basename;
+    writeFileSync(filepath, img.bytes);
+    saved.push(resolve(filepath));
   }
-  console.log(`  via ${result.via}`);
+
+  if (args.json) {
+    console.log(JSON.stringify({ files: saved, via: result.via, model: args.modelSlug }));
+  } else {
+    for (const f of saved) console.log(`✓ ${f}`);
+    console.log(`  via ${result.via}`);
+  }
   return 0;
 }
 
