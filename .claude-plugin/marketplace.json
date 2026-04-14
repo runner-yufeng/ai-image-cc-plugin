@@ -5,15 +5,15 @@
     "url": "https://github.com/runner-yufeng"
   },
   "metadata": {
-    "description": "AI image generation for Claude Code — prefers AI Studio free tier, falls back to Vertex AI on quota. Supports Nano Banana, Imagen 4, and OpenAI gpt-image-1.",
-    "version": "0.3.0"
+    "description": "AI image generation for Claude Code — prefers AI Studio free tier, falls back to Vertex AI on quota. Supports Nano Banana, Imagen 4, and OpenAI gpt-image-1. Includes --json, --output-dir, stdin, and multimodal/image-only overrides.",
+    "version": "0.5.0"
   },
   "plugins": [
     {
       "name": "ai-image",
       "source": "./plugins/ai-image",
-      "description": "Image generation skill that wraps the `ai-image` CLI. Prefers AI Studio free tier (GEMINI_API_KEY) and falls back to Vertex AI on quota/rate-limit errors. Requires the CLI to be installed separately (see README).",
-      "version": "0.3.0",
+      "description": "Image generation skill that wraps the `ai-image` CLI. Prefers AI Studio free tier (GEMINI_API_KEY) and falls back to Vertex AI on quota/rate-limit errors. Supports --json, --output-dir, stdin prompts, and --multimodal/--image-only overrides. Requires the CLI to be installed separately (see README).",
+      "version": "0.5.0",
       "category": "creative tools",
       "keywords": ["image-generation", "ai", "gemini", "imagen", "vertex-ai", "openai", "nano-banana", "fallback"]
     }
