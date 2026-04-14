@@ -9,9 +9,10 @@ import {
 import { openai } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createVertex } from "@ai-sdk/google-vertex";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { config as dotenvConfig } from "dotenv";
 import mri from "mri";
 import pkg from "../package.json" with { type: "json" };
 
@@ -33,14 +34,8 @@ export interface RunOptions extends GenerateOptions {
 }
 
 export function loadEnvFile(path = ENV_FILE): void {
-  if (!existsSync(path)) return;
-  for (const line of readFileSync(path, "utf-8").split("\n")) {
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    const val = line.slice(eq + 1).trim();
-    if (key && !process.env[key]) process.env[key] = val;
-  }
+  // override: false → shell env wins over file, preserving previous behavior
+  dotenvConfig({ path, override: false, quiet: true });
 }
 
 export function parseModelSlug(slug: string): { provider: string; modelId: string } {
