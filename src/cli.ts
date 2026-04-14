@@ -12,6 +12,8 @@ import { createVertex } from "@ai-sdk/google-vertex";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import mri from "mri";
+import pkg from "../package.json" with { type: "json" };
 
 export const CONFIG_DIR = join(homedir(), ".ai-image");
 export const ENV_FILE = join(CONFIG_DIR, ".env");
@@ -198,6 +200,7 @@ Options:
   -a, --aspect       Aspect ratio, e.g. 1:1, 16:9, 9:16
       --force-vertex Skip AI Studio, go straight to Vertex
   -h, --help         Show this help
+      --version      Print version and exit
 
 Auth (${ENV_FILE}):
   GEMINI_API_KEY=...                 AI Studio free tier (preferred)
@@ -214,29 +217,33 @@ export interface ParsedArgs {
   aspect?: string;
   forceVertex: boolean;
   help: boolean;
+  version: boolean;
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
-  let prompt = "";
-  let modelSlug = DEFAULT_MODEL;
-  let output: string | undefined;
-  let count = 1;
-  let aspect: string | undefined;
-  let forceVertex = false;
-  let help = false;
+  const raw = mri(argv, {
+    alias: { m: "model", o: "output", n: "count", a: "aspect", h: "help" },
+    boolean: ["help", "version", "force-vertex"],
+    string: ["model", "output", "aspect"],
+    default: { model: DEFAULT_MODEL, count: 1 },
+  });
 
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "-h" || a === "--help") help = true;
-    else if (a === "-m" || a === "--model") modelSlug = argv[++i];
-    else if (a === "-o" || a === "--output") output = argv[++i];
-    else if (a === "-n" || a === "--count") count = Number(argv[++i]);
-    else if (a === "-a" || a === "--aspect") aspect = argv[++i];
-    else if (a === "--force-vertex") forceVertex = true;
-    else if (!prompt) prompt = a;
+  const countRaw = raw.count;
+  const count = typeof countRaw === "number" ? countRaw : Number(countRaw);
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error(`--count/-n must be a positive integer (got "${countRaw}")`);
   }
 
-  return { prompt, modelSlug, output, count, aspect, forceVertex, help };
+  return {
+    prompt: typeof raw._[0] === "string" ? raw._[0] : "",
+    modelSlug: String(raw.model),
+    output: raw.output ? String(raw.output) : undefined,
+    count,
+    aspect: raw.aspect ? String(raw.aspect) : undefined,
+    forceVertex: Boolean(raw["force-vertex"]),
+    help: Boolean(raw.help),
+    version: Boolean(raw.version),
+  };
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -247,7 +254,19 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const args = parseArgs(argv);
+  let args: ParsedArgs;
+  try {
+    args = parseArgs(argv);
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+
+  if (args.version) {
+    console.log(pkg.version);
+    return 0;
+  }
+
   if (args.help) {
     console.log(HELP);
     return 0;
