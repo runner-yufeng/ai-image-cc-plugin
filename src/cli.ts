@@ -45,8 +45,38 @@ export function parseModelSlug(slug: string): { provider: string; modelId: strin
   return { provider: slug.slice(0, slash), modelId: slug.slice(slash + 1) };
 }
 
-export function isMultimodalLLM(id: string): boolean {
-  return /gemini.*image/i.test(id) || /nano-banana/i.test(id);
+export const MULTIMODAL_MODELS: readonly string[] = [
+  "gemini-2.5-flash-image",
+  "gemini-3-pro-image-preview",
+  "gemini-3.1-flash-image-preview",
+  "nano-banana",
+  "nano-banana-pro",
+];
+
+export type KindOverride = Kind | undefined;
+
+/**
+ * Resolve whether a model should be called as a multimodal LLM (generateText)
+ * or an image-only model (generateImage).
+ *
+ * Precedence:
+ *   1. Explicit override (--multimodal / --image-only) wins.
+ *   2. Exact match against MULTIMODAL_MODELS allowlist → multimodal.
+ *   3. Heuristic fallback for unknown gemini/nano-banana image variants → multimodal
+ *      with a warning, so future model renames don't silently break routing.
+ *   4. Otherwise → image-only.
+ */
+export function resolveKind(modelId: string, override: KindOverride): Kind {
+  if (override) return override;
+  if (MULTIMODAL_MODELS.includes(modelId)) return "multimodal";
+  if (/gemini.*image/i.test(modelId) || /nano-banana/i.test(modelId)) {
+    process.stderr.write(
+      `warning: "${modelId}" is not in the multimodal allowlist but matches the heuristic; ` +
+        `treating as multimodal. Pass --image-only to override.\n`,
+    );
+    return "multimodal";
+  }
+  return "image";
 }
 
 export function shouldFallbackToVertex(
@@ -138,9 +168,9 @@ export async function runVertex(opts: RunOptions & { kind: Kind }): Promise<ImgO
 }
 
 export async function runGoogle(
-  opts: RunOptions & { forceVertex: boolean },
+  opts: RunOptions & { forceVertex: boolean; kindOverride?: KindOverride },
 ): Promise<{ images: ImgOut[]; via: string }> {
-  const kind: Kind = isMultimodalLLM(opts.modelId) ? "multimodal" : "image";
+  const kind: Kind = resolveKind(opts.modelId, opts.kindOverride);
   const slug = `google/${opts.modelId}`;
 
   if (!opts.forceVertex && process.env.GEMINI_API_KEY) {
@@ -199,6 +229,8 @@ Options:
   -n, --count        Number of images [default: 1]
   -a, --aspect       Aspect ratio, e.g. 1:1, 16:9, 9:16
       --force-vertex Skip AI Studio, go straight to Vertex
+      --multimodal   Force multimodal path (generateText via result.files)
+      --image-only   Force image-only path (experimental_generateImage)
   -h, --help         Show this help
       --version      Print version and exit
 
@@ -216,6 +248,7 @@ export interface ParsedArgs {
   count: number;
   aspect?: string;
   forceVertex: boolean;
+  kindOverride?: KindOverride;
   help: boolean;
   version: boolean;
 }
@@ -223,7 +256,7 @@ export interface ParsedArgs {
 export function parseArgs(argv: string[]): ParsedArgs {
   const raw = mri(argv, {
     alias: { m: "model", o: "output", n: "count", a: "aspect", h: "help" },
-    boolean: ["help", "version", "force-vertex"],
+    boolean: ["help", "version", "force-vertex", "multimodal", "image-only"],
     string: ["model", "output", "aspect"],
     default: { model: DEFAULT_MODEL, count: 1 },
   });
@@ -234,6 +267,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
     throw new Error(`--count/-n must be a positive integer (got "${countRaw}")`);
   }
 
+  const multimodal = Boolean(raw.multimodal);
+  const imageOnly = Boolean(raw["image-only"]);
+  if (multimodal && imageOnly) {
+    throw new Error("--multimodal and --image-only are mutually exclusive");
+  }
+  const kindOverride: KindOverride = multimodal
+    ? "multimodal"
+    : imageOnly
+      ? "image"
+      : undefined;
+
   return {
     prompt: typeof raw._[0] === "string" ? raw._[0] : "",
     modelSlug: String(raw.model),
@@ -241,6 +285,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     count,
     aspect: raw.aspect ? String(raw.aspect) : undefined,
     forceVertex: Boolean(raw["force-vertex"]),
+    kindOverride,
     help: Boolean(raw.help),
     version: Boolean(raw.version),
   };
@@ -279,12 +324,13 @@ export async function main(argv: string[]): Promise<number> {
 
   const { provider, modelId } = parseModelSlug(args.modelSlug);
 
-  const runOpts: RunOptions & { forceVertex: boolean } = {
+  const runOpts: RunOptions & { forceVertex: boolean; kindOverride?: KindOverride } = {
     modelId,
     prompt: args.prompt,
     count: args.count,
     aspect: args.aspect,
     forceVertex: args.forceVertex,
+    kindOverride: args.kindOverride,
   };
 
   let result: { images: ImgOut[]; via: string };
