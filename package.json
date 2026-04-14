@@ -1,0 +1,15 @@
+{
+  "name": "ai-image",
+  "version": "0.3.0",
+  "description": "CLI for AI image generation — AI Studio free tier with Vertex AI fallback, plus OpenAI",
+  "type": "module",
+  "bin": {
+    "ai-image": "./src/cli.ts"
+  },
+  "dependencies": {
+    "ai": "^6.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "@ai-sdk/google": "^2.0.0",
+    "@ai-sdk/google-vertex": "^3.0.0"
+  }
+}

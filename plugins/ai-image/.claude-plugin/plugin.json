@@ -1,0 +1,5 @@
+{
+  "name": "ai-image",
+  "version": "0.3.0",
+  "description": "AI image generation skill — AI Studio first, Vertex AI fallback, plus OpenAI gpt-image-1"
+}
