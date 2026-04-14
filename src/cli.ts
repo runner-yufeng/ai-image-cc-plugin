@@ -27,6 +27,7 @@ export interface GenerateOptions {
   prompt: string;
   count: number;
   aspect?: string;
+  maxRetries?: number;
 }
 
 export interface RunOptions extends GenerateOptions {
@@ -72,10 +73,12 @@ export async function runWithModel(
   kind: Kind,
   opts: GenerateOptions,
 ): Promise<ImgOut[]> {
-  const { prompt, count, aspect } = opts;
+  const { prompt, count, aspect, maxRetries } = opts;
+  const retryOpt = maxRetries !== undefined ? { maxRetries } : {};
+
   if (kind === "multimodal") {
     const tasks = Array.from({ length: count }, () =>
-      generateText({ model: model as LanguageModel, prompt }),
+      generateText({ model: model as LanguageModel, prompt, ...retryOpt }),
     );
     const results = await Promise.all(tasks);
     const out: ImgOut[] = [];
@@ -91,6 +94,7 @@ export async function runWithModel(
     model: model as ImageModel,
     prompt,
     n: count,
+    ...retryOpt,
     ...(aspect && { aspectRatio: aspect as `${number}:${number}` }),
   });
   return r.images.map((img) => ({ bytes: img.uint8Array, ext: "png" }));
@@ -112,7 +116,8 @@ export async function runAIStudio(opts: RunOptions & { kind: Kind }): Promise<Im
   const googleAI = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
   const model =
     opts.kind === "multimodal" ? googleAI(opts.modelId) : googleAI.image(opts.modelId);
-  return runWithModel(model, opts.kind, opts);
+  // maxRetries: 0 — fail fast so Vertex fallback kicks in immediately on quota errors.
+  return runWithModel(model, opts.kind, { ...opts, maxRetries: 0 });
 }
 
 export async function runVertex(opts: RunOptions & { kind: Kind }): Promise<ImgOut[]> {
