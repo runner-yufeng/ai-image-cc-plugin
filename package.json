@@ -1,11 +1,49 @@
 {
-  "name": "ai-image",
+  "name": "@runner-yufeng/ai-image",
   "version": "0.3.0",
   "description": "CLI for AI image generation — AI Studio free tier with Vertex AI fallback, plus OpenAI",
   "type": "module",
   "bin": {
-    "ai-image": "./src/cli.ts"
+    "ai-image": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "dev": "bun run src/cli.ts",
+    "prepublishOnly": "bun run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runner-yufeng/ai-image-cc-plugin.git"
+  },
+  "homepage": "https://github.com/runner-yufeng/ai-image-cc-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/runner-yufeng/ai-image-cc-plugin/issues"
+  },
+  "keywords": [
+    "ai",
+    "image-generation",
+    "cli",
+    "gemini",
+    "nano-banana",
+    "imagen",
+    "vertex-ai",
+    "openai",
+    "gpt-image-1",
+    "claude-code"
+  ],
+  "license": "MIT",
+  "author": "runner-yufeng",
   "dependencies": {
     "ai": "^6.0.0",
     "@ai-sdk/openai": "^2.0.0",

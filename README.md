@@ -11,25 +11,14 @@ An image generation CLI + Claude Code plugin that prefers the **AI Studio free t
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) (required to run the CLI)
+- Node 20+ **or** [Bun](https://bun.sh)
 - A `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com/apikey) — free tier
 - For Vertex fallback: a GCP project with the Vertex AI API enabled, plus `gcloud` CLI and ADC login
 - For OpenAI models: `OPENAI_API_KEY`
 
 ## Install
 
-### 1. CLI (required)
-
-```bash
-git clone https://github.com/runner-yufeng/ai-image-cc-plugin.git ~/tools/ai-image
-cd ~/tools/ai-image
-bun install
-bun link
-```
-
-This makes `ai-image` available globally.
-
-### 2. Claude Code plugin (optional — integrates with Claude Code sessions)
+### Option A — Claude Code plugin (recommended)
 
 In any Claude Code session:
 
@@ -38,15 +27,33 @@ In any Claude Code session:
 /plugin install ai-image@ai-image-cc-plugin-marketplace
 ```
 
-After the plugin is installed, Claude invokes the `ai-image` CLI when you ask it to generate images.
+That's it. When you ask Claude to generate an image, the plugin runs the CLI via `bunx @runner-yufeng/ai-image` — no separate install needed.
 
-### 3. Configure
+### Option B — Direct CLI (for shell use)
+
+Install the CLI globally so `ai-image` is on your PATH:
+
+```bash
+# pick one
+bun  add -g @runner-yufeng/ai-image
+npm  i   -g @runner-yufeng/ai-image
+pnpm add -g @runner-yufeng/ai-image
+```
+
+Or run ad-hoc with no install:
+
+```bash
+bunx @runner-yufeng/ai-image "a banana astronaut on mars"
+npx  @runner-yufeng/ai-image "a banana astronaut on mars"
+```
+
+### Configure
 
 Copy `.env.example` to `~/.ai-image/.env` and fill in your keys:
 
 ```bash
 mkdir -p ~/.ai-image
-cp .env.example ~/.ai-image/.env
+curl -fsSL https://raw.githubusercontent.com/runner-yufeng/ai-image-cc-plugin/main/.env.example -o ~/.ai-image/.env
 # edit ~/.ai-image/.env
 ```
 
@@ -102,7 +109,11 @@ Non-fallback errors (auth 401, network, malformed prompt) surface immediately.
 
 ## Status
 
-Published as v0.1 — works end-to-end but has known rough edges tracked in [GitHub issues](https://github.com/runner-yufeng/ai-image-cc-plugin/issues). Contributions welcome.
+Works end-to-end; rough edges tracked in [GitHub issues](https://github.com/runner-yufeng/ai-image-cc-plugin/issues). Contributions welcome.
+
+## Releasing
+
+See [RELEASING.md](./RELEASING.md) for the npm publish + plugin marketplace release flow.
 
 ## License
 

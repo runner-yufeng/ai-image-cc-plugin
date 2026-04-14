@@ -1,11 +1,13 @@
 ---
 name: ai-image
-description: Generate images via the local `ai-image` CLI. Prefers AI Studio free tier (GEMINI_API_KEY) and falls back to Vertex AI on quota errors. Supports Nano Banana / NB Pro, Imagen, and OpenAI gpt-image-1. Use when the user asks to generate, create, or edit images.
+description: Generate images via the `ai-image` CLI (zero install — runs via bunx/npx). Prefers AI Studio free tier (GEMINI_API_KEY) and falls back to Vertex AI on quota errors. Supports Nano Banana / NB Pro, Imagen, and OpenAI gpt-image-1. Use when the user asks to generate, create, or edit images.
 ---
 
 # ai-image
 
-Generates images via the `ai-image` CLI. Requires the CLI to be installed separately — see the repo README for install instructions.
+Generates images via the `@runner-yufeng/ai-image` CLI.
+
+**Invocation:** use `bunx @runner-yufeng/ai-image "..."` (or `npx @runner-yufeng/ai-image "..."` if bun is unavailable). If the user has installed the CLI globally, the bare command `ai-image "..."` also works.
 
 Routing for `google/*` models:
 1. **AI Studio** (`GEMINI_API_KEY`) — free tier, preferred
@@ -22,11 +24,11 @@ Routing for `google/*` models:
 ## Basic usage
 
 ```bash
-ai-image "a banana astronaut on mars"                 # default: Nano Banana via AI Studio
-ai-image "sunset cliffs" -a 16:9 -o hero.png
-ai-image "minimalist logo" -m openai/gpt-image-1
-ai-image "photoreal cliff" -m google/imagen-4.0-generate-001   # Vertex-only model
-ai-image "prompt" --force-vertex                      # skip AI Studio
+bunx @runner-yufeng/ai-image "a banana astronaut on mars"                 # default: Nano Banana via AI Studio
+bunx @runner-yufeng/ai-image "sunset cliffs" -a 16:9 -o hero.png
+bunx @runner-yufeng/ai-image "minimalist logo" -m openai/gpt-image-1
+bunx @runner-yufeng/ai-image "photoreal cliff" -m google/imagen-4.0-generate-001   # Vertex-only model
+bunx @runner-yufeng/ai-image "prompt" --force-vertex                      # skip AI Studio
 ```
 
 ## Model picker
